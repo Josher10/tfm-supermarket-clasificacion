@@ -1,0 +1,21 @@
+# Datasets y datos crudos/procesados
+data/
+
+# Modelos entrenados
+models/
+
+# Archivos de entorno y credenciales
+.env
+.venv/
+env/
+venv/
+
+# Python y Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Archivos del sistema y de IDE
+.DS_Store
+.vscode/
+.idea/

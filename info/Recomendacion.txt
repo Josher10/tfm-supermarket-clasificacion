@@ -1,0 +1,2 @@
+Usar La IA (Gemini o ChatGPT) y pedirle que te haga clustering y revisar si lo hace bien.
+Primero hacer el embedding, hacer un PCA y probar si relaciona bien las palabras, despues hacer el supervisado  para ver si funciona
