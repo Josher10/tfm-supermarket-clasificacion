@@ -46,6 +46,36 @@ Una vez des-duplicado el fichero origen, y antes de entrenar la inteligencia art
     *   **EDA del Vocabulario Maestro:** Comprobar la espectacular reducción del volumen de filas y el nuevo ratio de desbalance real (único por clase) frente al tribunal.
     *   **Verificación Topológica:** Confirmar visualmente cuántos "conflictos" existían operativamente y cómo ha quedado la distribución real de artículos únicos por cada `NOMBRE_EMPRESA`.
 
+### Decisión de Features: Rol de cada columna del Corpus Maestro
+
+El fichero `data/processed/diccionario_maestro.csv` contiene **4 columnas**. Se excluyen deliberadamente las 13 restantes del dataset original (17 columnas). A continuación se documenta el rol de cada columna y la justificación de exclusión.
+
+#### Columnas incluidas en el Corpus Maestro
+
+| Columna | Rol | Uso en el Pipeline |
+|---|---|---|
+| `DESCRIPCION_ARTICULO` | **Feature única** de entrenamiento | Input exclusivo de todos los modelos ML (M0–M4). Todos los motores de vectorización (TF-IDF, Embeddings) procesan únicamente esta columna. |
+| `ESTADO` | **Variable target** (y) | Etiqueta binaria: PERMITIDO / NO PERMITIDO. |
+| `NOMBRE_EMPRESA` | **Metadato operativo** — NO es feature | Contexto para des-duplicación y reglas deterministas segregadas por proveedor. Nunca entra en `fit()` ni `transform()` de ningún modelo. |
+| `SUBFAMILIA` | **Metadato taxonómico** — NO es feature | Alimenta las Listas Negras (120 subfamilias 100% NP). Se usa para análisis de errores post-entrenamiento. Nunca entra en ningún modelo ML. |
+
+#### Columnas excluidas del Corpus Maestro (justificación empírica)
+
+| Columna | Razón de exclusión |
+|---|---|
+| `COD_EAN` | 99 EANs con etiquetado contradictorio. Uso potencial solo como caché de producción, no como feature. |
+| `SECCION` / `ID_SECCION` | Redundante con SUBFAMILIA (nivel jerárquico superior). Taxonomía inconsistente entre supermercados. |
+| `FAMILIA` / `ID_FAMILIA` | Redundante con SUBFAMILIA. 1.573 categorías con nulos (0.13%). |
+| `ID_SUBFAMILIA` | Código numérico opaco — ya se conserva SUBFAMILIA como texto legible. |
+| `GRUPO` | Solo 2 valores. Tasa NP casi igual en ambos (0.38% vs 0.69%). Sin poder discriminante. |
+| `IMPORTE_BRUTO` / `IMPORTE_BASE` | Correlación con target: **-0.012** y **-0.011**. Prácticamente cero. |
+| `UNIDAD_MEDIDA` | 16.6% nulos. Inconsistencia ("KILOS" vs "KG"). No discrimina. |
+| `UNIDADES_ARTICULO` | 30.1% nulos. Variable transaccional, no propiedad del producto. |
+| `TIPO_IMPUESTOS` | Diferencias NP marginales entre tipos. IVA 13/14 al 100% NP son espejismos (1 registro cada uno). |
+| `ID_TICKETS` | Identificador transaccional. Sin relación con la clasificación del producto. |
+
+> **Principio de diseño:** El clasificador NLP es deliberadamente agnóstico a la taxonomía del proveedor porque esta no es estándar ni fiable. La taxonomía se explota como capa de reglas deterministas (previa al ML) y como herramienta de diagnóstico de errores (posterior al entrenamiento).
+
 ---
 
 ### Fase 2: Vectorización — Motores de Representación Textual
