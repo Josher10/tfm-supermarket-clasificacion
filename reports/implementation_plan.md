@@ -48,48 +48,107 @@ Una vez des-duplicado el fichero origen, y antes de entrenar la inteligencia art
 
 ---
 
-### Fase 2: Motor Léxico-Morfológico (Capa "Sparse")
+### Fase 2: Vectorización — Motores de Representación Textual
 > **Estado:** ⏳ `PLANIFICADO`
-Construiremos el cerebro léxico puro diseñado para resistir las peores pesadillas ortográficas logísticas de los tickets como "B. CAL. ESP" o trunques masivos.
-*   **Archivos:** `src/features/sparse_engine.py` o módulo dentro de un notebook estructurado.
-*   **Acciones Técnicas:**
-    *   **TF-IDF N-grams (Palabras):** Garantiza que cada token fuerte ("VINO") adquiera un índice matricial transparente para justificar matemáticamente cualquier corte (explicabilidad extrema).
-    *   **Modelo fastText (N-gramas de caracteres):** Captura sub-palabras. Si la base conoce "LECHE", acercará al vector de espacio cualquier "LCH", "LECH" mitigando dinámicamente las palabras fuera de vocabulario (OOV) sin diccionarios a patadas.
 
----
+En lugar de fijar una arquitectura de concatenación Sparse+Dense a priori, se construirán **motores de vectorización independientes** que se evaluarán como candidatos separados en la Fase 4a. Que los datos decidan cuál es mejor.
 
-### Fase 3: Fusión Semántica Destilada (Capa "Dense")
-> **Estado:** ⏳ `PLANIFICADO`
-Para aquellas oraciones polisémicas donde las reglas básicas fallan, usamos la potencia del espacio topológico.
+#### 2.A — Motor Sparse (TF-IDF Dual)
+*   **Archivos:** `src/features/sparse_engine.py`
+*   **Estrategia:** TF-IDF con doble análisis:
+    *   **N-gramas de palabras** `(1,2)` — Explicabilidad directa: cada dimensión del vector es un token legible ("VINO", "LECHE ENTERA").
+    *   **N-gramas de caracteres** `(3,5)` con `char_wb` — Robustez ante truncamientos y abreviaturas ("LCH" ≈ "LECHE").
+    *   Normalización L2 post-concatenación para equilibrar sub-espacios.
+*   **Ventaja clave:** Explicabilidad total — los pesos del clasificador lineal señalan directamente qué n-gramas activaron la decisión.
+
+#### 2.B — Motor Dense (Embeddings Semánticos)
 *   **Archivos:** `src/features/dense_engine.py`
-*   **Acciones Técnicas:**
-    *   **Small Language Models (SLM):** Instanciación de un encoder Transformer ligero (ej. `paraphrase-multilingual-MiniLM-L12-v2`).
-    *   **Destilación Estática (`Model2Vec`):** Requisito absoluto. Reduciremos la huella RAM del transformer topológico a menos de `~40MB` para el entorno de Google Colab, ganando hasta un `x500` en latencia pero logrando codificar incrustaciones densas (Embeddings) de alto nivel que concatenaremos matricialmente con el sub-vector de la Fase 2.
+*   **Estrategia:** Encoder Transformer ligero (`paraphrase-multilingual-MiniLM-L12-v2`) para generar vectores densos de 384 dimensiones.
+*   **Ventaja clave:** Captura sinonimia y semántica ("CERVEZA" ≈ "BIRRA") que TF-IDF no puede.
+*   **Variante frugal (`Model2Vec`):** Destilación estática del Transformer a ~40MB, ganando hasta x500 en latencia manteniendo la semántica. Se evalúa como candidato adicional.
+
+#### 2.C — Motor Zero-Shot (Baseline sin entrenamiento)
+*   **Modelo:** `Recognai/bert-base-spanish-wwm-cased-xnli`
+*   **Estrategia:** Clasificación inmediata con etiquetas candidatas `["producto permitido", "producto no permitido"]`, sin ningún entrenamiento.
+*   **Ventaja clave:** Establece un baseline gratuito — si el sistema entrenado no supera significativamente al Zero-Shot, hay un problema de datos.
 
 ---
 
-### Fase 4a: Modelado (Entrenamiento del Clasificador Híbrido)
+### Fase 3: Modelado — Ablation Study Comparativo
 > **Estado:** ⏳ `PLANIFICADO`
+
+**Cambio arquitectónico:** La arquitectura inicial planteaba concatenar Sparse+Dense en un clasificador único. Tras evaluar la naturaleza del dataset (~38K muestras, texto de 3-6 palabras, desbalance 47:1), se decidió **evaluar cada representación independientemente** para cuantificar la contribución real de cada componente.
+
 *   **Archivos:** `notebooks/03_modeling.ipynb`
-*   **Acciones Técnicas:**
-    *   **Inferencia NLP Pura:** Entrenamiento **exclusivo con `DESCRIPCION_ARTICULO`**, modelo 100% agnóstico al proveedor.
-    *   **Clasificador Explicable Lineal:** `LinearSVC` o `Logistic Regression` sobre tensores Sparse+Dense.
-    *   **Cost-Sensitive Learning:** `class_weight='balanced'` para penalizar errores en la clase minoritaria.
+
+#### Modelos Candidatos
+
+| ID | Representación | Clasificador | Explicable | RAM est. |
+|---|---|---|---|---|
+| M0 | Zero-Shot (sin entrenamiento) | Propio del modelo NLI | ⚠️ Parcial | ~500MB |
+| M1 | TF-IDF word+char (Sparse) | LogisticRegression | ✅ Total | ~15MB |
+| M2 | Embeddings MiniLM (Dense) | LogisticRegression | ⚠️ Vía LIME/SHAP | ~200MB |
+| M3 | Model2Vec destilado (Dense frugal) | LogisticRegression | ⚠️ Vía LIME/SHAP | ~40MB |
+| M4 | TF-IDF + Embeddings concatenados | LogisticRegression | ⚠️ Parcial | ~215MB |
+
+#### Criterios de Selección (definidos a priori)
+
+> **Estos criterios se fijan ANTES de ejecutar los experimentos para evitar sesgo de selección post-hoc.**
+
+1.  **Métrica primaria:** `Recall de NO PERMITIDO` — El sistema debe detectar el máximo de productos prohibidos. Un Falso Negativo (aprobar fraude) es más grave que un Falso Positivo (bloquear algo permitido).
+2.  **Métrica de desempate:** `F1-Macro` — Equilibrio general entre clases.
+3.  **Umbral de significancia:** Diferencia > 2 puntos porcentuales. Si dos modelos difieren en < 2%, se consideran equivalentes.
+4.  **Criterio de desempate final:** En caso de empate (< 2%), se selecciona el modelo con:
+    *   Mayor **explicabilidad** (prioridad para auditoría de fondos públicos).
+    *   Menor **huella computacional** (frugalidad para Colab Free).
+
+#### Protocolo Experimental
+
+*   **Validación:** `StratifiedKFold(n_splits=5, shuffle=True, random_state=42)` — **Mismo split para TODOS los modelos**.
+*   **Entrenamiento:** Exclusivo con `DESCRIPCION_ARTICULO` — modelo 100% agnóstico al proveedor.
+*   **Cost-Sensitive Learning:** `class_weight='balanced'` en todos los clasificadores lineales.
+*   **Significancia estadística:** Intervalos de confianza por bootstrap (1000 iteraciones) para validar que las diferencias no son varianza del fold.
 
 ---
 
-### Fase 4b: Evaluación, XAI y Human-In-The-Loop
+### Fase 4: Evaluación, XAI y Human-In-The-Loop
 > **Estado:** ⏳ `PLANIFICADO`
 *   **Archivos:** `notebooks/04_evaluation.ipynb`
 *   **Acciones Técnicas:**
-    *   **Evaluación (Stratified K-Fold):** Curva PR-AUC, Recall minoritario, F1-Macro.
-    *   **Explicabilidad (XAI):** Coeficientes del modelo lineal, importancia por n-grama.
-    *   **Enrutamiento REVISAR:** Umbrales de certeza `< 0.75` y `< 0.95` para delegación forzosa a revisión humana.
+    *   **Tabla comparativa final:** Recall NP, Precision NP, F1-Macro, PR-AUC, RAM, Explicabilidad para cada candidato.
+    *   **Selección del modelo ganador** según los criterios pre-definidos en Fase 3.
+    *   **Explicabilidad (XAI):** Coeficientes del modelo lineal (si Sparse gana), o LIME/SHAP (si Dense gana).
+    *   **Enrutamiento REVISAR:** Umbrales de certeza `< 0.75` (REVISAR obligatorio) y `> 0.95` (decisión automática) para delegación forzosa a revisión humana.
+    *   **Análisis de errores por FAMILIA/SECCION:** Diagnóstico post-hoc usando las columnas taxonómicas excluidas del entrenamiento para identificar patrones de fallo.
 
+---
 
-## User Review Required
+### Pipeline Final de Producción
 
-Revisa esta arquitectura del proyecto. 
+```
+Entrada: DESCRIPCION_ARTICULO (texto crudo del ticket)
+    │
+    ▼
+┌──────────────────────────────────┐
+│  CAPA 1: Reglas Deterministas    │  ← Listas Negras por SUBFAMILIA
+│  (Alcohol, tabaco, etc.)         │     Explicabilidad: 100%
+│  Resultado: NP directo           │
+└────────────┬─────────────────────┘
+             │ Si no matchea regla
+             ▼
+┌──────────────────────────────────┐
+│  CAPA 2: Modelo ML Ganador       │  ← El mejor del Ablation Study
+│  (TF-IDF / Embeddings / Model2Vec│     Seleccionado por datos
+│   + LogisticRegression)          │
+└────────────┬─────────────────────┘
+             │ Probabilidad
+             ▼
+┌──────────────────────────────────┐
+│  CAPA 3: Enrutamiento            │
+│  > 0.95 → Decisión automática    │
+│  0.75–0.95 → Sugerencia + humano │
+│  < 0.75 → REVISAR (humano)       │
+└──────────────────────────────────┘
+```
 
-*   ¿Estás de acuerdo con el esquema general diseñado para cubrir todas las fases de los algoritmos (y sus tácticas técnicas adaptativas a Google Colab)?
-*   Si estás conforme, mi primera orden de trabajo inmediata será iniciar la codificación del embudo del sistema y limpieza, es decir, el Notebook `02_data_preparation.ipynb`.
+> **Contribución académica:** La comparativa rigurosa entre técnicas simples (TF-IDF) y complejas (Transformers/Model2Vec) en un dominio real con fondos públicos demuestra criterio ingenieril y amplitud metodológica ante el tribunal. La contribución no es el algoritmo, sino el **pipeline auditable, frugal y explicable** diseñado para un caso operativo real.
